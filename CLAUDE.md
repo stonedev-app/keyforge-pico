@@ -25,11 +25,14 @@ Windowsの設定を変えずにUSキーボードを正しく使えるように�
 ## ビルド方法
 
 ```bash
-# 初回 or CMakeLists.txt変更後
-cd build && cmake .. -DPICO_BOARD=pico
+# 初回のみ: buildディレクトリ作成
+mkdir -p build
 
-# 通常ビルド
-cd build && ninja
+# 初回 or CMakeLists.txt変更後
+cd build && cmake .. -G Ninja
+
+# 通常ビルド（プロジェクトルートから実行）
+ninja -C build
 ```
 
 生成物: `build/keyforge-pico.uf2`
