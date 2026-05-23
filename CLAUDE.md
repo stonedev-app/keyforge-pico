@@ -1,0 +1,99 @@
+# keyforge-pico
+
+## プロジェクト概要
+
+US配列キーボード → JIS配列キーボード変換アダプタ。
+
+- ハード: Picossci USBホスト（RP2040搭載）
+- USB-A側（PIO）: USキーボードをUSBホストとして受信
+- USB Micro側: PCへJIS HIDキーボードとして認識させる
+
+## 使用ライブラリ
+
+- Pico SDK 2.2.0 (`~/.pico-sdk/sdk/2.2.0/`)
+- Pico-PIO-USB: PIOでUSBホスト実装（USB-A側）
+- TinyUSB: USBデバイス/HID実装（USB Micro側、Pico SDK同梱）
+
+## ビルド方法
+
+```bash
+# 初回 or CMakeLists.txt変更後
+cd build && cmake .. -DPICO_BOARD=pico
+
+# 通常ビルド
+cd build && ninja
+```
+
+生成物: `build/keyforge-pico.uf2`
+
+## フラッシュ方法
+
+```bash
+# BOOTSELボタンを押しながら接続後
+~/.pico-sdk/picotool/2.2.0-a4/picotool/picotool load build/keyforge-pico.uf2 -fx
+
+# OpenOCD (CMSIS-DAP接続時)
+openocd -s ~/.pico-sdk/openocd/0.12.0+dev/scripts \
+  -f interface/cmsis-dap.cfg -f target/rp2040.cfg \
+  -c "adapter speed 5000; program build/keyforge-pico.elf verify reset exit"
+```
+
+## アーキテクチャ
+
+### CPUコア分担（Pico-PIO-USBの推奨構成）
+
+- **コア0**: TinyUSB デバイスタスク（PC側 HID送信）
+- **コア1**: Pico-PIO-USB ホストタスク（USキーボード受信）
+
+### 処理フロー
+
+```
+[USキーボード] --USB-A(PIO)--> [コア1: ホスト受信]
+                                      |
+                               USキーコード + モディファイア
+                                      |
+                               [キー変換テーブル]
+                                      |
+                               JISキーコード + モディファイア
+                                      |
+                               [コア0: HID送信] --USB Micro--> [PC]
+```
+
+### ピン設定（Picossciボード）
+
+- `PIO_USB_DP_PIN` = GPIO 0 (D+)
+- `PIO_USB_DM_PIN` = GPIO 1 (D-)
+
+Pico-PIO-USB の設定: `PIO_USB_DP_PIN` を 0 にすれば DM は自動的に 1 になる（連番前提）。
+
+## キー変換の方針
+
+- HIDキーコードレベルで変換（スキャンコードではない）
+- US→JISで記号の位置が異なるキーは変換テーブルで対応
+- モディファイア変換が必要なケースあり（例: US `@` [Shift+2] → JIS `@` [単独キー]）
+- JIS特有キー（`¥`、`全角/半角`、`変換`、`無変換`）の扱いは未定
+
+### 主な変換対象キー
+
+| US入力 | JIS出力 | 備考 |
+|--------|---------|------|
+| `@` (Shift+2) | `@` (JIS独立キー) | モディファイア変更 |
+| `` ` `` | 全角/半角 | JISキーに置換 |
+| `[` | `[` | 位置は異なる |
+| `\` | `¥` | JIS独立キー |
+
+## 開発上の制約
+
+- RP2040のSRAM: 264KB。キー変換テーブルはフラッシュ配置（`const` で定義）
+- USB HIDレポートのポーリング間隔: 1ms以内を目標
+- stdio は UART のみ使用（`pico_enable_stdio_usb` は 0 のまま。USB Micro をデバイスとして使うため）
+- コア間通信: `multicore_fifo` または共有変数 + メモリバリア
+
+## ファイル構成（予定）
+
+```
+keyforge-pico.c      # main、コア0エントリ
+usb_host.c/.h        # コア1、Pico-PIO-USBラッパー
+usb_device.c/.h      # コア0、TinyUSB HIDデバイス
+keymap.c/.h          # US→JIS変換テーブル
+```
