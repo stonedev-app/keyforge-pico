@@ -4,15 +4,21 @@
 
 US配列キーボード → JIS配列キーボード変換アダプタ。
 
+**背景**: Windowsはキーボードごとにレイアウト（US/JIS）を設定できず、システム全体で統一される。
+そのため、USキーボードをJIS設定のWindowsに接続すると記号キーがすべてずれてしまう。
+このアダプタはUSキーボードのHIDレポートをJIS配列に変換してPCへ送出することで、
+Windowsの設定を変えずにUSキーボードを正しく使えるようにする。
+
 - ハード: Picossci USBホスト（RP2040搭載）
+  - 製品ページ: https://www.switch-science.com/products/9158
 - USB-A側（PIO）: USキーボードをUSBホストとして受信
-- USB Micro側: PCへJIS HIDキーボードとして認識させる
+- USB Type-C側: PCへJIS HIDキーボードとして認識させる
 
 ## 使用ライブラリ
 
 - Pico SDK 2.2.0 (`~/.pico-sdk/sdk/2.2.0/`)
 - Pico-PIO-USB: PIOでUSBホスト実装（USB-A側）
-- TinyUSB: USBデバイス/HID実装（USB Micro側、Pico SDK同梱）
+- TinyUSB: USBデバイス/HID実装（USB Type-C側、Pico SDK同梱）
 
 ## ビルド方法
 
@@ -56,7 +62,7 @@ openocd -s ~/.pico-sdk/openocd/0.12.0+dev/scripts \
                                       |
                                JISキーコード + モディファイア
                                       |
-                               [コア0: HID送信] --USB Micro--> [PC]
+                               [コア0: HID送信] --USB Type-C--> [PC]
 ```
 
 ### ピン設定（Picossciボード）
@@ -86,7 +92,7 @@ Pico-PIO-USB の設定: `PIO_USB_DP_PIN` を 0 にすれば DM は自動的に 1
 
 - RP2040のSRAM: 264KB。キー変換テーブルはフラッシュ配置（`const` で定義）
 - USB HIDレポートのポーリング間隔: 1ms以内を目標
-- stdio は UART のみ使用（`pico_enable_stdio_usb` は 0 のまま。USB Micro をデバイスとして使うため）
+- stdio は UART のみ使用（`pico_enable_stdio_usb` は 0 のまま。USB Type-C をデバイスとして使うため）
 - コア間通信: `multicore_fifo` または共有変数 + メモリバリア
 
 ## ファイル構成（予定）
