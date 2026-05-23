@@ -41,11 +41,10 @@ ninja -C build
 
 ```bash
 # BOOTSELボタンを押しながら接続後
-~/.pico-sdk/picotool/2.2.0-a4/picotool/picotool load build/keyforge-pico.uf2 -fx
+picotool load build/keyforge-pico.uf2 -fx
 
 # OpenOCD (CMSIS-DAP接続時)
-openocd -s ~/.pico-sdk/openocd/0.12.0+dev/scripts \
-  -f interface/cmsis-dap.cfg -f target/rp2040.cfg \
+openocd -f interface/cmsis-dap.cfg -f target/rp2040.cfg \
   -c "adapter speed 5000; program build/keyforge-pico.elf verify reset exit"
 ```
 
