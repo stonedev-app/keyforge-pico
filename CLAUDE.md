@@ -18,7 +18,9 @@ Windowsの設定を変えずにUSキーボードを正しく使えるように�
 
 - Pico SDK 2.2.0 (`~/.pico-sdk/sdk/2.2.0/`)
 - Pico-PIO-USB: PIOでUSBホスト実装（USB-A側）
+  - https://github.com/sekigon-gonnoc/Pico-PIO-USB
 - TinyUSB: USBデバイス/HID実装（USB Type-C側、Pico SDK同梱）
+  - https://github.com/hathach/tinyusb
 
 ## ビルド方法
 
