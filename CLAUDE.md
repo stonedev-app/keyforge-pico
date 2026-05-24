@@ -76,6 +76,46 @@ openocd -f interface/cmsis-dap.cfg -f target/rp2040.cfg \
 
 Pico-PIO-USB の設定: `PIO_USB_DP_PIN` を 0 にすれば DM は自動的に 1 になる（連番前提）。
 
+### HID レポート構造
+
+USB HID キーボードレポートは 8 バイト固定:
+
+| バイト | 内容 |
+|--------|------|
+| 0 | モディファイア（8-bit） |
+| 1 | 予約（0x00） |
+| 2〜7 | キーコード（最大6キー同時押し、各 8-bit） |
+
+モディファイアビット配置:
+- bit0: 左 Ctrl / bit1: 左 Shift / bit2: 左 Alt / bit3: 左 GUI
+- bit4: 右 Ctrl / bit5: 右 Shift / bit6: 右 Alt / bit7: 右 GUI
+
+### コア間通信
+
+`multicore_fifo` を使用。HID レポート 8 バイトを 32-bit × 2回に分けて送受信:
+
+```c
+// コア1 → コア0 へ送信
+multicore_fifo_push_blocking(
+    ((uint32_t)report.modifier << 24) | ((uint32_t)report.reserved << 16) |
+    ((uint32_t)report.keycode[0] << 8) | report.keycode[1]);
+multicore_fifo_push_blocking(
+    ((uint32_t)report.keycode[2] << 24) | ((uint32_t)report.keycode[3] << 16) |
+    ((uint32_t)report.keycode[4] << 8)  | report.keycode[5]);
+
+// コア0 側で受信
+uint32_t w0 = multicore_fifo_pop_blocking();
+uint32_t w1 = multicore_fifo_pop_blocking();
+uint8_t modifier   = (w0 >> 24) & 0xFF;
+uint8_t keycode[6] = {
+    (w0 >> 8) & 0xFF, w0 & 0xFF,
+    (w1 >> 24) & 0xFF, (w1 >> 16) & 0xFF,
+    (w1 >> 8) & 0xFF,  w1 & 0xFF
+};
+```
+
+> **備考**: FIFO が満杯のとき `push_blocking()` はコア1をブロックする。コア0が継続的に pop しているため実用上は問題ないが、USB ホストのポーリングタイミングに影響する可能性がある。
+
 ## キー変換の方針
 
 参考実装: [m47ch4n/qmk-translate-ansi-to-jis](https://github.com/m47ch4n/qmk-translate-ansi-to-jis)
@@ -116,7 +156,7 @@ Pico-PIO-USB の設定: `PIO_USB_DP_PIN` を 0 にすれば DM は自動的に 1
 - RP2040のSRAM: 264KB。キー変換テーブルはフラッシュ配置（`const` で定義）
 - USB HIDレポートのポーリング間隔: 1ms以内を目標
 - stdio は UART のみ使用（`pico_enable_stdio_usb` は 0 のまま。USB Type-C をデバイスとして使うため）
-- コア間通信: `multicore_fifo` または共有変数 + メモリバリア
+- UART は UART1 を使用（GPIO 0/1 が PIO USB で占有されているため）。TX=GPIO 8, RX=GPIO 9
 
 ## ファイル構成（予定）
 
