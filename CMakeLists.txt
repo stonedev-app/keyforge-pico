@@ -35,7 +35,7 @@ pico_sdk_init()
 
 # Add executable. Default name is the project name, version 0.1
 
-add_executable(keyforge-pico keyforge-pico.c )
+add_executable(keyforge-pico src/keyforge-pico.c)
 
 pico_set_program_name(keyforge-pico "keyforge-pico")
 pico_set_program_version(keyforge-pico "0.1")
@@ -50,7 +50,7 @@ target_link_libraries(keyforge-pico
 
 # Add the standard include files to the build
 target_include_directories(keyforge-pico PRIVATE
-        ${CMAKE_CURRENT_LIST_DIR}
+        ${CMAKE_CURRENT_LIST_DIR}/src
 )
 
 pico_add_extra_outputs(keyforge-pico)
