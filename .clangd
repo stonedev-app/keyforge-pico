@@ -1,0 +1,10 @@
+CompileFlags:
+  # compile_commands.json の場所（build/ 以下に生成される）
+  CompilationDatabase: build
+  Add:
+    # ARM向けとして解析する（クロスコンパイル環境のため）
+    - --target=arm-none-eabi
+
+Diagnostics:
+  # pico/stdlib.h のような convenience header への誤検知を抑制
+  UnusedIncludes: None
