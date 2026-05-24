@@ -32,316 +32,110 @@ keymap.c
   └── 変換テーブル（const定義、フラッシュ配置）
 ```
 
-## 実装フェーズ
+## 実装ステップ
 
-### フェーズ1: keymap.c / keymap.h
-
-依存関係がなく最初に実装できる。単体テストしやすい。
-
-#### keymap.h
-
-```c
-#pragma once
-#include <stdint.h>
-
-typedef struct {
-    uint8_t modifier;
-    uint8_t reserved;
-    uint8_t keycode[6];
-} hid_keyboard_report_t;
-
-// US HIDレポートをJIS HIDレポートに変換する
-// 変換テーブルに載っていないキーはそのまま通過する
-void translate_us_to_jis(const hid_keyboard_report_t *us_report,
-                          hid_keyboard_report_t *jis_report);
-```
-
-#### keymap.c の実装方針
-
-1. **変換エントリ構造体**をフラッシュ配置(`const`)で定義:
-
-```c
-typedef struct {
-    uint8_t us_keycode;
-    bool    us_shift;     // Shiftあり入力か
-    uint8_t jis_keycode;
-    int8_t  shift_delta;  // -1: Shift除去, 0: 変化なし, +1: Shift付加
-} keymap_entry_t;
-```
-
-2. `translate_us_to_jis()` のロジック:
-   - HIDレポートのkeycode[0..5]を順に走査
-   - Shift状態（`modifier & 0x22`）を確認
-   - 変換テーブルを線形探索（24エントリ程度なので十分高速）
-   - マッチしたエントリのjis_keycodeとshift_deltaを適用
-   - 変換後のmodifierはShift付加/除去を反映して更新
-   - `reserved`は0x00のまま
-
-3. **Alt+バッククォート**の特殊処理:
-   - keycode == 0x35 かつ Alt（`modifier & 0x44`）のとき
-   - keycodeはそのまま（0x35 = JIS 全角/半角）、Altビットをクリア
-
-#### 注意事項
-
-モディファイアは全キーコードで共有される1バイト。同時押しで「Shift除去が必要なキー」と
-「Shift付加が必要なキー」が混在した場合は正しく変換できない（構造的制限）。
-詳細は [keymap.md](keymap.md) の同時押しセクションを参照。
+動作確認しながら積み上げる6ステップ構成。各ステップは単独でビルド・フラッシュして確認する。
 
 ---
 
-### フェーズ2: usb_host.c / usb_host.h
+### ステップ1: マルチコア基礎
 
-Pico-PIO-USBラッパー。コア1で動作する。
+**目標**: コア1で生成した値がコア0のprintに表示される
 
-#### usb_host.h
+- `src/keyforge-pico.c` に `core1_entry()` を追加
+- コア1: カウンタをインクリメントして `multicore_fifo_push_blocking()` で送信
+- コア0: `multicore_fifo_rvalid()` で確認後 `pop_blocking()` して `printf()`
+- CMakeLists.txt: `pico_multicore` をリンク、`pico_enable_stdio_uart` を 1 に
 
-```c
-#pragma once
-
-// コア1エントリポイント（multicore_launch_core1() に渡す）
-void core1_entry(void);
-```
-
-#### usb_host.c の実装方針
-
-1. **`core1_entry()`**:
-   ```c
-   void core1_entry(void) {
-       // Pico-PIO-USB ホスト初期化
-       pio_usb_configuration_t config = PIO_USB_DEFAULT_CONFIG;
-       config.pin_dp = PIO_USB_DP_PIN;  // GPIO 0
-       tuh_configure(1, TUH_CFGID_RPI_PIO_USB_CONFIGURATION, &config);
-       tuh_init(1);
-
-       while (true) {
-           tuh_task();  // USBホストタスク（ポーリング）
-       }
-   }
-   ```
-
-2. **`tuh_hid_report_received_cb()`** コールバック（TinyUSBホスト側）:
-   ```c
-   void tuh_hid_report_received_cb(uint8_t dev_addr, uint8_t instance,
-                                    uint8_t const *report, uint16_t len) {
-       if (len < 8) return;
-
-       hid_keyboard_report_t us_report, jis_report;
-       memcpy(&us_report, report, sizeof(us_report));
-       translate_us_to_jis(&us_report, &jis_report);
-
-       // コア0へ転送（2ワード）
-       multicore_fifo_push_blocking(
-           ((uint32_t)jis_report.modifier   << 24) |
-           ((uint32_t)jis_report.reserved   << 16) |
-           ((uint32_t)jis_report.keycode[0] <<  8) |
-            (uint32_t)jis_report.keycode[1]);
-       multicore_fifo_push_blocking(
-           ((uint32_t)jis_report.keycode[2] << 24) |
-           ((uint32_t)jis_report.keycode[3] << 16) |
-           ((uint32_t)jis_report.keycode[4] <<  8) |
-            (uint32_t)jis_report.keycode[5]);
-
-       // 次のレポートを要求
-       tuh_hid_receive_report(dev_addr, instance);
-   }
-   ```
-
-3. **`tuh_hid_mount_cb()`** でHIDレポート受信を開始:
-   ```c
-   void tuh_hid_mount_cb(uint8_t dev_addr, uint8_t instance,
-                          uint8_t const *desc_report, uint16_t desc_len) {
-       tuh_hid_receive_report(dev_addr, instance);
-   }
-   ```
+参照: [architecture.md](architecture.md) のコア間通信セクション
 
 ---
 
-### フェーズ3: usb_device.c / usb_device.h
+### ステップ2: TinyUSBデバイス単体
 
-TinyUSBデバイス側。コア0で動作する。
+**目標**: PCがキーボードとして認識し、タイマーで10秒ごとにAが入力される
 
-#### usb_device.h
+- `src/tusb_config.h` 作成（`CFG_TUD_HID 1`）
+- `src/usb_device.c / usb_device.h` 実装
+  - HIDディスクリプタ（Boot Protocol Keyboard）
+  - `usb_device_init()` / `usb_device_send_report()`
+  - 必須コールバック（`tud_descriptor_device_cb` 等）
+- `src/keyforge-pico.c`: `tud_task()` ループ + タイマーで定期送信
+- CMakeLists.txt: `tinyusb_device` / `tinyusb_board` をリンク
 
-```c
-#pragma once
-#include "keymap.h"
-
-void usb_device_init(void);
-// JISキーボードとしてHIDレポートを送信（busy時はドロップ）
-void usb_device_send_report(const hid_keyboard_report_t *report);
-```
-
-#### usb_device.c の実装方針
-
-1. **HIDディスクリプタ**をJISキーボードとして定義:
-   - Usage Page: 0x01（Generic Desktop）
-   - Usage: 0x06（Keyboard）
-   - Boot Protocol Keyboard ディスクリプタを使用（8バイトレポート）
-
-2. **`usb_device_init()`**: `tusb_init()` を呼び出す
-
-3. **`usb_device_send_report()`**:
-   ```c
-   void usb_device_send_report(const hid_keyboard_report_t *report) {
-       if (!tud_hid_ready()) return;  // busyならドロップ
-       tud_hid_keyboard_report(0, report->modifier, report->keycode);
-   }
-   ```
-
-4. **必須コールバック**:
-   - `tud_hid_get_report_cb()`: 現在のレポートを返す
-   - `tud_hid_set_report_cb()`: LED状態等（NumLock等）を受信
-   - `tud_descriptor_device_cb()`: デバイスディスクリプタ
-   - `tud_descriptor_configuration_cb()`: 設定ディスクリプタ
-   - `tud_descriptor_string_cb()`: 文字列ディスクリプタ（製品名等）
-
-5. **tusb_config.h** で設定:
-   ```c
-   #define CFG_TUD_HID  1
-   #define CFG_TUD_ENDPOINT0_SIZE 64
-   ```
+コア1起動は不要（コア0のみ）。
 
 ---
 
-### フェーズ4: keyforge-pico.c リライト
+### ステップ3: Pico-PIO-USBホスト
 
-LEDブリンクコードを削除し、メインロジックを実装する。
+**目標**: USBキーボードの入力がUARTに出力される
 
-#### main() の構成
+- `src/usb_host.c / usb_host.h` 実装
+  - `core1_entry()`: `tuh_init()` → `tuh_task()` ループ
+  - `tuh_hid_mount_cb()`: `tuh_hid_receive_report()` でレポート受信開始
+  - `tuh_hid_report_received_cb()`: レポート内容を `printf()` で出力
+- CMakeLists.txt: FetchContent で `pico_pio_usb` を取得・リンク
 
-```c
-int main(void) {
-    // 1. UART1初期化（GPIO 8/9、デバッグ用）
-    uart_init(uart1, 115200);
-    gpio_set_function(8, GPIO_FUNC_UART);
-    gpio_set_function(9, GPIO_FUNC_UART);
-    stdio_uart_init();  // または stdio_init_all() + UART設定
-
-    // 2. TinyUSBデバイス初期化（コア0で行う）
-    usb_device_init();
-
-    // 3. コア1起動（Pico-PIO-USBホストタスク）
-    multicore_launch_core1(core1_entry);
-
-    // 4. コア0メインループ
-    while (true) {
-        tud_task();  // TinyUSBデバイスタスク
-
-        // FIFOにデータがあれば読み取って送信
-        if (multicore_fifo_rvalid()) {
-            uint32_t w0 = multicore_fifo_pop_blocking();
-            uint32_t w1 = multicore_fifo_pop_blocking();
-
-            hid_keyboard_report_t report;
-            report.modifier   = (w0 >> 24) & 0xFF;
-            report.reserved   = 0x00;
-            report.keycode[0] = (w0 >>  8) & 0xFF;
-            report.keycode[1] =  w0        & 0xFF;
-            report.keycode[2] = (w1 >> 24) & 0xFF;
-            report.keycode[3] = (w1 >> 16) & 0xFF;
-            report.keycode[4] = (w1 >>  8) & 0xFF;
-            report.keycode[5] =  w1        & 0xFF;
-
-            usb_device_send_report(&report);
-        }
-    }
-}
+```cmake
+include(FetchContent)
+FetchContent_Declare(
+    pico_pio_usb
+    GIT_REPOSITORY https://github.com/sekigon-gonnoc/Pico-PIO-USB.git
+    GIT_TAG main
+)
+FetchContent_MakeAvailable(pico_pio_usb)
 ```
 
 ---
 
-### フェーズ5: CMakeLists.txt 更新
+### ステップ4: コア連携・そのまま転送
 
-#### 追加すべき内容
+**目標**: USキーボードの入力がPCにそのまま届く
 
-1. **Pico-PIO-USB の取得**（FetchContent を推奨）:
-   ```cmake
-   include(FetchContent)
-   FetchContent_Declare(
-       pico_pio_usb
-       GIT_REPOSITORY https://github.com/sekigon-gonnoc/Pico-PIO-USB.git
-       GIT_TAG main
-   )
-   FetchContent_MakeAvailable(pico_pio_usb)
-   ```
-
-2. **ソースファイルの追加**:
-   ```cmake
-   add_executable(keyforge-pico
-       src/keyforge-pico.c
-       src/usb_host.c
-       src/usb_device.c
-       src/keymap.c
-   )
-   ```
-
-3. **リンクライブラリの追加**:
-   ```cmake
-   target_link_libraries(keyforge-pico
-       pico_stdlib
-       pico_multicore
-       tinyusb_device
-       tinyusb_board
-       pico_pio_usb
-   )
-   ```
-
-4. **UART stdio 有効化**（USB stdioは無効のまま）:
-   ```cmake
-   pico_enable_stdio_uart(keyforge-pico 1)
-   pico_enable_stdio_usb(keyforge-pico 0)
-   ```
-
-5. **インクルードパスを src/ に設定**（tusb_config.h 等も src/ に置く）:
-   ```cmake
-   target_include_directories(keyforge-pico PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-   ```
+- ステップ2（TinyUSBデバイス）+ ステップ3（Pico-PIO-USBホスト）を統合
+- `usb_host.c`: レポートをそのままFIFOに push（変換なし）
+- `keyforge-pico.c`: FIFOから受信 → `usb_device_send_report()`
+- FIFOのエンコード仕様は [architecture.md](architecture.md) を参照
 
 ---
 
-### フェーズ6: 動作確認
+### ステップ5: 変換前後のprint確認
 
-#### ビルド確認
+**目標**: `translate_us_to_jis()` の変換結果をUARTで目視確認できる
 
-```bash
-cd build && cmake .. -G Ninja
-ninja -C build
-# エラーなく build/keyforge-pico.uf2 が生成されること
-```
+- `src/keymap.c / keymap.h` 実装
+  - `hid_keyboard_report_t` 型定義
+  - 変換エントリ構造体（`us_keycode` / `us_shift` / `jis_keycode` / `shift_delta`）
+  - `translate_us_to_jis()` 実装（詳細は [keymap.md](keymap.md) 参照）
+- `usb_host.c`: `translate_us_to_jis()` を呼び、変換前後を両方 `printf()`
+- FIFOには変換後レポートを送る
 
-#### フラッシュ・基本動作確認
+---
 
-1. BOOTSELボタンを押しながらPicossciをPCに接続
-2. `picotool load build/keyforge-pico.uf2 -fx` でフラッシュ
-3. UARTモニタを接続（UART1, 115200bps, GPIO 8/9）
-4. USキーボードをUSB-Aポートに接続
-5. PCにJISキーボードとして認識されることを確認
+### ステップ6: キー変換を本番に組み込み
 
-#### キー変換確認チェックリスト
+**目標**: JIS変換が正しく動く
 
-PCのキーボード設定をJISにした状態でテキストエディタに入力:
+- printデバッグを削除（または残す）
+- 全体通しで動作確認
+- PCのキーボード設定をJISにした状態でテキストエディタに入力して検証:
 
-- [ ] `=` キー → `=` が入力される
-- [ ] `[` キー → `[` が入力される
-- [ ] `]` キー → `]` が入力される
-- [ ] `\` キー → `¥` が入力される
-- [ ] `'` キー → `'` が入力される
-- [ ] `` ` `` キー → `` ` `` が入力される
-- [ ] Shift+`2` → `@` が入力される
-- [ ] Shift+`6` → `^` が入力される
-- [ ] Shift+`-` → `_` が入力される
-- [ ] Shift+`=` → `+` が入力される
-- [ ] Shift+`;` → `:` が入力される
-- [ ] Shift+`'` → `"` が入力される
-- [ ] Shift+`` ` `` → `~` が入力される
-- [ ] Alt+`` ` `` → 全角/半角トグル
+| 入力 | 期待する出力 |
+|------|------------|
+| `=` | `=` |
+| `[` | `[` |
+| `]` | `]` |
+| `\` | `¥` |
+| `'` | `'` |
+| `` ` `` | `` ` `` |
+| Shift+`2` | `@` |
+| Shift+`6` | `^` |
+| Shift+`-` | `_` |
+| Shift+`=` | `+` |
+| Shift+`;` | `:` |
+| Shift+`'` | `"` |
+| Shift+`` ` `` | `~` |
+| Alt+`` ` `` | 全角/半角トグル |
 
-## 実装順序のまとめ
-
-```
-1. keymap.c / keymap.h     ← 依存なし、単体テスト可能
-2. usb_host.c / usb_host.h ← keymap.h に依存
-3. usb_device.c / .h       ← TinyUSB のみ依存
-4. keyforge-pico.c         ← すべてに依存
-5. CMakeLists.txt 更新     ← ビルド通しながら並行して進める
-```
+全キーの詳細は [keymap.md](keymap.md) を参照。
