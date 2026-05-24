@@ -7,10 +7,11 @@
 ## モジュール構成
 
 ```
-keyforge-pico.c      main()・コア0メインループ
-usb_host.c / .h      コア1エントリ・Pico-PIO-USBラッパー
-usb_device.c / .h    TinyUSB HIDデバイス初期化・レポート送信
-keymap.c / .h        US→JIS変換テーブル・変換ロジック
+src/
+  keyforge-pico.c    main()・コア0メインループ
+  usb_host.c / .h    コア1エントリ・Pico-PIO-USBラッパー
+  usb_device.c / .h  TinyUSB HIDデバイス初期化・レポート送信
+  keymap.c / .h      US→JIS変換テーブル・変換ロジック
 ```
 
 ### 依存関係
@@ -267,10 +268,10 @@ int main(void) {
 2. **ソースファイルの追加**:
    ```cmake
    add_executable(keyforge-pico
-       keyforge-pico.c
-       usb_host.c
-       usb_device.c
-       keymap.c
+       src/keyforge-pico.c
+       src/usb_host.c
+       src/usb_device.c
+       src/keymap.c
    )
    ```
 
@@ -291,9 +292,9 @@ int main(void) {
    pico_enable_stdio_usb(keyforge-pico 0)
    ```
 
-5. **tusb_config.h** をインクルードパスに追加:
+5. **インクルードパスを src/ に設定**（tusb_config.h 等も src/ に置く）:
    ```cmake
-   target_include_directories(keyforge-pico PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+   target_include_directories(keyforge-pico PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
    ```
 
 ---
