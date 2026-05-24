@@ -4,6 +4,33 @@
 
 `keyforge-pico.c`はLEDブリンクのスケルトンのみ。実装すべきファイルはすべて未作成。
 
+## モジュール構成
+
+```
+keyforge-pico.c      main()・コア0メインループ
+usb_host.c / .h      コア1エントリ・Pico-PIO-USBラッパー
+usb_device.c / .h    TinyUSB HIDデバイス初期化・レポート送信
+keymap.c / .h        US→JIS変換テーブル・変換ロジック
+```
+
+### 依存関係
+
+```
+keyforge-pico.c
+  ├── usb_host.h        (core1_entry 宣言)
+  └── usb_device.h      (usb_device_init / usb_device_send_report)
+
+usb_host.c
+  └── keymap.h          (translate_us_to_jis)
+      └── multicore_fifo_push_blocking() でコア0へ送信
+
+usb_device.c
+  └── TinyUSB HIDコールバック実装（tusb_config.h に依存）
+
+keymap.c
+  └── 変換テーブル（const定義、フラッシュ配置）
+```
+
 ## 実装フェーズ
 
 ### フェーズ1: keymap.c / keymap.h
